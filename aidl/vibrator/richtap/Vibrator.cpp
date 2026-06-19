@@ -20,9 +20,13 @@
 
 #include "aac_vibra_function.h"
 
-#define RICHTAP_LIGHT_STRENGTH 69
-#define RICHTAP_MEDIUM_STRENGTH 89
-#define RICHTAP_STRONG_STRENGTH 99
+#define RICHTAP_LIGHT_STRENGTH  0
+#define RICHTAP_MEDIUM_STRENGTH 1
+#define RICHTAP_STRONG_STRENGTH 2
+
+#define RICHTAP_SCALE_SUBTLE   35
+#define RICHTAP_SCALE_MODERATE 55
+#define RICHTAP_SCALE_STRONG   80
 
 #ifdef USES_OPLUS_AWINIC
 #define RICHTAP_OPLUS_ACTIVATE_NODE "/sys/class/leds/vibrator/oplus_activate"
@@ -147,6 +151,9 @@ ndk::ScopedAStatus Vibrator::getCapabilities(int32_t* _aidl_return) {
 }
 
 ndk::ScopedAStatus Vibrator::off() {
+
+    aac_vibra_looper_stopPerformHe();
+
 #ifdef USES_OPLUS_AWINIC
     if (mUseSysfsOnOff) {
         int ret = sysfsOff();
@@ -216,23 +223,47 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
 }
 
 #ifdef USE_RICHTAP_EFFECT_REMAP
-std::optional<uint32_t> mapEffectToPrebakedId(Effect effect) {
+static std::optional<uint32_t> mapEffectToPrebakedId(Effect effect) {
     switch (effect) {
-        case Effect::TEXTURE_TICK:
-        case Effect::TICK:
         case Effect::CLICK:
-            return 0x3009;
-        case Effect::HEAVY_CLICK:
-        case Effect::THUD:
-        case Effect::POP:
-            return 0x3001;
+            return static_cast<uint32_t>(Effect::CLICK) + 0x1000;
+        case Effect::TICK:
+            return static_cast<uint32_t>(Effect::TICK) + 0x1000;
+        case Effect::TEXTURE_TICK:
+            return static_cast<uint32_t>(Effect::TEXTURE_TICK) + 0x1000;
         case Effect::DOUBLE_CLICK:
+            return static_cast<uint32_t>(Effect::DOUBLE_CLICK) + 0x1000;
+        case Effect::HEAVY_CLICK:
+            return 0x3001;
+        case Effect::THUD:
             return 0x3002;
+        case Effect::POP:
+            return 0x3003;
         default:
             return std::nullopt;
     }
 }
 #endif
+
+static uint8_t getDynamicScale(Effect effect) {
+    switch (effect) {
+        case Effect::TICK:
+        case Effect::TEXTURE_TICK:
+            // Subtle — used for sliders, scroll, clock ticks
+            return RICHTAP_SCALE_SUBTLE;
+        case Effect::CLICK:
+        case Effect::POP:
+            // Moderate — discrete UI taps, keyboard
+            return RICHTAP_SCALE_MODERATE;
+        case Effect::HEAVY_CLICK:
+        case Effect::THUD:
+        case Effect::DOUBLE_CLICK:
+            // Pronounced — intentional confirmation actions
+            return RICHTAP_SCALE_STRONG;
+        default:
+            return RICHTAP_SCALE_MODERATE;
+    }
+}
 
 ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
                                      const std::shared_ptr<IVibratorCallback>& callback,
@@ -258,20 +289,9 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
 
-    // --- PER EFFECT STRENGTH TUNING ---
-    if (effect == Effect::TICK) {
-        strength = strength * 20 / 100;
-    } else if (effect == Effect::TEXTURE_TICK) {
-        strength = strength * 15 / 100;
-    } else if (effect == Effect::CLICK) {
-        strength = strength * 15 / 100;
-    } else if (effect == Effect::POP) {
-        strength = strength * 30 / 100;
-    } else if (effect == Effect::HEAVY_CLICK || effect == Effect::THUD || effect == Effect::DOUBLE_CLICK) {
-        strength = strength * 60 / 100;
-    }
-
     if (sLastMode == MODE_STREAM) aac_vibra_setAmplitude(0xFF);
+
+    aac_vibra_dynamic_scale(getDynamicScale(effect));
 
 #ifdef USE_RICHTAP_EFFECT_REMAP
     auto mappedEffect = mapEffectToPrebakedId(effect);
@@ -285,6 +305,8 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 
     int32_t ret = aac_vibra_looper_prebaked_effect(mappedEffect.value(), strength);
 #else
+    ALOGD("Performing effect=%d, strength=%d", static_cast<int>(effect), strength);
+
     int32_t ret = aac_vibra_looper_prebaked_effect(static_cast<uint32_t>(effect), strength);
 #endif
     if (ret < 0) {
@@ -307,8 +329,9 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 
 ndk::ScopedAStatus Vibrator::getSupportedEffects(std::vector<Effect>* _aidl_return) {
 #ifdef USE_RICHTAP_EFFECT_REMAP
-    *_aidl_return = {Effect::CLICK, Effect::DOUBLE_CLICK, Effect::TICK,        Effect::THUD,
-                     Effect::POP,   Effect::HEAVY_CLICK,  Effect::TEXTURE_TICK};
+    *_aidl_return = {Effect::CLICK, Effect::DOUBLE_CLICK, Effect::TICK,
+                     Effect::THUD,  Effect::POP,          Effect::HEAVY_CLICK,
+                     Effect::TEXTURE_TICK};
 #else
     *_aidl_return = {Effect::CLICK, Effect::DOUBLE_CLICK, Effect::TICK,
                      Effect::THUD,  Effect::POP,          Effect::HEAVY_CLICK};
